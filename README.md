@@ -36,7 +36,7 @@ Skript se průběžně ptá. Odpovídáte `a` (ano), `n` (ne) nebo `p` (přesko�
 - **Hardware:** model, identifikátor a číslo modelu, čip, jádra CPU/GPU, RAM, SSD, sériové číslo, verze macOS
 - **Activation Lock, Najít Mac, registrace MDM/DEP, konfigurační profily, SIP**
 - **Baterie:** počet cyklů, stav, skutečná kapacita vůči návrhové (z `ioreg`), nabíječka
-- **SSD:** SMART stav, model, kapacita (opotřebení jen pokud už je nainstalovaný `smartctl`)
+- **SSD:** SMART stav, model, kapacita; volitelně přes `smartctl` i opotřebení (Percentage Used), zapsaná data, doba provozu a chyby integrity
 - **Kernel panic** za posledních 90 dní, vynucená vypnutí, pády aplikací
 - **Periferie:** displej, kamera, reproduktory, mikrofon, Wi‑Fi, Bluetooth, Touch ID, klávesnice/trackpad, Thunderbolt
 - **Uptime** a datum prvního nastavení systému
@@ -71,6 +71,7 @@ Ukázka:
 
 - Skript **pouze čte**: nic neinstaluje, nemění nastavení ani hlasitost.
 - Dočasné soubory (testovací stránka, zvuk, report) jsou ve vlastní složce v `/tmp` a po skončení se smažou.
+- `smartctl` se stahuje jen na vyžádání: oficiální balíček smartmontools z GitHubu se ověří přes SHA-256 a rozbalí do dočasné složky v `/tmp`, neinstaluje se.
 - Stránka s ručními testy běží lokálně, bez internetu a bez externích knihoven.
 - Jeden soubor, čistý bash 3.2 (výchozí v macOS), jen nástroje dodávané s macOS.
 - Před spuštěním si můžete [kód prohlédnout](maccheck.sh).

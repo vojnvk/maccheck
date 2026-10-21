@@ -20,6 +20,10 @@ OPT_NO_SUDO=0
 OPT_COLOR=1
 STRESS_SECONDS=180
 
+# Oficiální build smartmontools – stahuje se jen na vyžádání a jen do /tmp.
+SMARTCTL_URL="https://github.com/smartmontools/smartmontools/releases/download/RELEASE_7_5/smartmontools-7.5.dmg"
+SMARTCTL_SHA256="4aa176c161612488f3db053fdf3eee47bbc5178c8fe46afb2002d8dbdf563cc5"
+
 usage() {
 	cat <<'EOF'
 Mac Diagnostika – technická kontrola stavu Macu (pouze čte, nic nemění)
@@ -133,6 +137,9 @@ stop_stress() {
 
 cleanup() {
 	stop_stress
+	if [ -n "${WORKDIR:-}" ] && [ -d "$WORKDIR/smart-mnt" ]; then
+		hdiutil detach "$WORKDIR/smart-mnt" -force -quiet >/dev/null 2>&1
+	fi
 	[ -n "${WORKDIR:-}" ] && [ -d "$WORKDIR" ] && rm -rf "$WORKDIR"
 }
 
@@ -523,6 +530,23 @@ check_battery() {
 	return 0
 }
 
+# Stáhne oficiální smartmontools do WORKDIR a vypíše cestu k smartctl.
+# Nic neinstaluje: obraz se připojí jen pro čtení, balíček se rozbalí do /tmp.
+# Návratový kód: 0 = OK, 1 = stažení/rozbalení selhalo, 2 = nesouhlasí SHA-256.
+fetch_smartctl() {
+	local dmg="$WORKDIR/smartmontools.dmg" mnt="$WORKDIR/smart-mnt" dest="$WORKDIR/smart-pkg" sum bin
+	curl -fsSL --max-time 60 -o "$dmg" "$SMARTCTL_URL" 2>/dev/null || return 1
+	sum=$(shasum -a 256 "$dmg" 2>/dev/null | awk '{print $1}')
+	[ "$sum" = "$SMARTCTL_SHA256" ] || return 2
+	mkdir -p "$mnt" || return 1
+	hdiutil attach -nobrowse -readonly -noautoopen -mountpoint "$mnt" "$dmg" >/dev/null 2>&1 || return 1
+	pkgutil --expand-full "$mnt"/*.pkg "$dest" >/dev/null 2>&1
+	hdiutil detach "$mnt" -quiet >/dev/null 2>&1 || hdiutil detach "$mnt" -force -quiet >/dev/null 2>&1
+	bin=$(find "$dest" -name smartctl -type f 2>/dev/null | head -1)
+	[ -n "$bin" ] && [ -x "$bin" ] || return 1
+	printf '%s\n' "$bin"
+}
+
 check_ssd() {
 	section "Úložiště (SSD)"
 	if [ -z "$DISK0" ]; then
@@ -541,13 +565,42 @@ check_ssd() {
 	*) record warn "SMART" "$smart" ;;
 	esac
 
-	if command -v smartctl >/dev/null 2>&1; then
-		local out used units tb spare
-		out=$(smartctl -a disk0 2>/dev/null)
-		[ -n "$out" ] || { [ "$HAVE_SUDO" = 1 ] && out=$(sudo -n smartctl -a disk0 2>/dev/null); }
+	local smartctl_bin
+	smartctl_bin=$(command -v smartctl 2>/dev/null)
+	if [ -z "$smartctl_bin" ]; then
+		note "Opotřebení SSD (Percentage Used, zapsaná data) umí přečíst smartctl ze smartmontools."
+		note "Nic se neinstaluje: oficiální balíček (1,6 MB, GitHub smartmontools) se ověří a rozbalí jen do /tmp."
+		if ask_yn "Stáhnout smartctl dočasně do /tmp?" n; then
+			smartctl_bin=$(fetch_smartctl)
+			case $? in
+			0) ;;
+			2) note "Kontrolní součet staženého souboru nesouhlasí – smartctl se nepoužije." ;;
+			*) note "smartctl se nepodařilo stáhnout (je Mac připojen k internetu?)." ;;
+			esac
+		fi
+	fi
+
+	if [ -n "$smartctl_bin" ]; then
+		local out used units tb spare hours unsafe media crit
+		out=$("$smartctl_bin" -a disk0 2>/dev/null)
+		[ -n "$out" ] || { [ "$HAVE_SUDO" = 1 ] && out=$(sudo -n "$smartctl_bin" -a disk0 2>/dev/null); }
 		used=$(printf '%s\n' "$out" | awk -F: '/Percentage Used/ {gsub(/[ %]/, "", $2); print $2; exit}')
 		units=$(printf '%s\n' "$out" | awk -F: '/Data Units Written/ {print $2; exit}' | sed 's/\[.*//; s/[ ,.]//g')
 		spare=$(printf '%s\n' "$out" | awk -F: '/^Available Spare:/ {gsub(/ /, "", $2); print $2; exit}')
+		hours=$(printf '%s\n' "$out" | awk -F: '/^Power On Hours:/ {gsub(/[ ,]/, "", $2); print $2; exit}')
+		unsafe=$(printf '%s\n' "$out" | awk -F: '/^Unsafe Shutdowns:/ {gsub(/[ ,]/, "", $2); print $2; exit}')
+		media=$(printf '%s\n' "$out" | awk -F: '/^Media and Data Integrity Errors:/ {gsub(/[ ,]/, "", $2); print $2; exit}')
+		crit=$(printf '%s\n' "$out" | awk -F: '/^Critical Warning:/ {gsub(/ /, "", $2); print $2; exit}')
+		case "$crit" in
+		'') ;;
+		0x00) record ok "Kritické varování SSD (smartctl)" "žádné (0x00)" ;;
+		*) record err "Kritické varování SSD (smartctl)" "$crit" ;;
+		esac
+		case "$media" in
+		'') ;;
+		0) record ok "Chyby integrity dat SSD (smartctl)" "0" ;;
+		*) record err "Chyby integrity dat SSD (smartctl)" "$media" ;;
+		esac
 		if [ -n "$used" ]; then
 			if [ "$used" -lt 80 ]; then
 				record ok "Opotřebení SSD (smartctl)" "Percentage Used $used %${spare:+, Available Spare $spare}"
@@ -562,9 +615,11 @@ check_ssd() {
 			tb=$(awk -v u="$units" 'BEGIN { printf "%.2f", u * 512000 / 1e12 }')
 			kv "Zapsáno celkem" "$tb TB"
 		fi
+		[ -n "$hours" ] && kv "Doba provozu SSD" "$hours h"
+		[ -n "$unsafe" ] && kv "Nečistá vypnutí" "$unsafe"
 		[ -n "$used$units" ] || record skip "Opotřebení SSD (smartctl)" "smartctl nevrátil NVMe údaje"
 	else
-		record skip "Opotřebení SSD" "smartctl není nainstalován (neinstaluje se)"
+		record skip "Opotřebení SSD" "smartctl není k dispozici"
 	fi
 	return 0
 }
