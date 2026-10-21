@@ -36,7 +36,7 @@ Skript se průběžně ptá. Odpovídáte `a` (ano) nebo `n` (ne), případně j
 - **Hardware:** model, identifikátor a číslo modelu, čip, jádra CPU/GPU, RAM, SSD, sériové číslo, verze macOS
 - **Activation Lock, Najít Mac, registrace MDM/DEP, konfigurační profily, SIP**
 - **Baterie:** počet cyklů, stav, skutečná kapacita vůči návrhové (z `ioreg`), nabíječka
-- **SSD:** SMART stav, model, kapacita; volitelně přes `smartctl` i opotřebení (Percentage Used), zapsaná data, doba provozu a chyby integrity
+- **SSD:** SMART stav, model, kapacita; volitelně přes `smartctl` i opotřebení (Percentage Used), zapsaná data, doba provozu a chyby integrity a celkové hodnocení: **Výborný** (opotřebení pod 10 %), **Dobrý** (pod 80 %), **Opotřebený** (80 % a víc nebo málo rezervních bloků), **Kritický** (chyby integrity, kritické varování, rezerva pod prahem nebo opotřebení 100 %)
 - **Kernel panic** za posledních 90 dní, vynucená vypnutí, pády aplikací
 - **Periferie (přítomnost):** displej, kamera, reproduktory, mikrofon, Wi‑Fi, Bluetooth, Touch ID, klávesnice/trackpad, Thunderbolt
 - **Uptime** a datum prvního nastavení systému
@@ -50,7 +50,7 @@ Skript se průběžně ptá. Odpovídáte `a` (ano) nebo `n` (ne), případně j
 
 ## Stavy a report
 
-Každá kontrola má stav ✅ OK / ⚠️ Pozor / ❌ Chyba / ⏭️ Přeskočeno a k němu naměřenou hodnotu. Na konci se vypíší klíčové údaje (kapacita a nabití baterie, počet cyklů, hodiny provozu SSD), souhrn a seznam položek se stavem Pozor nebo Chyba. Report v Markdownu lze zkopírovat do schránky, případně uložit do `/tmp`.
+Každá kontrola má stav ✅ OK / ⚠️ Pozor / ❌ Chyba / ⏭️ Přeskočeno a k němu naměřenou hodnotu. Na konci se vypíší klíčové údaje (kapacita a nabití baterie, počet cyklů, stav a hodiny provozu SSD), souhrn a seznam položek se stavem Pozor nebo Chyba. Report v Markdownu lze zkopírovat do schránky, případně uložit do `/tmp`.
 
 Ukázka:
 
@@ -66,6 +66,7 @@ Ukázka:
   Kapacita baterie:        98 % (výpočet z ioreg: 95.6 %)
   Nabití baterie:          22 %
   Cykly baterie:           177
+  Stav SSD:                Výborný – opotřebení 2 %, zbývá ~98 % odhadované životnosti
   Hodiny provozu SSD:      836 h
 
   ✅ OK: 22   ⚠️  Pozor: 0   ❌ Chyba: 0   ⏭️  Přeskočeno: 1

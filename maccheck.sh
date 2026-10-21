@@ -594,8 +594,67 @@ check_ssd() {
 		fi
 		[ -n "$unsafe" ] && kv "Nečistá vypnutí" "$unsafe"
 		[ -n "$used$units" ] || record skip "Opotřebení SSD (smartctl)" "smartctl nevrátil NVMe údaje"
+
+		# Kolikrát se zapsala celá kapacita disku
+		local bytes rewrites
+		bytes=$(spval "Disk Size" "$DISK0" | sed -n 's/.*(\([0-9]*\) Bytes).*/\1/p')
+		if [ -n "$units" ] && [ -n "$bytes" ] && [ "$bytes" -gt 0 ]; then
+			rewrites=$(awk -v u="$units" -v b="$bytes" 'BEGIN { printf "%.0f", u * 512000 / b }')
+			kv "Přepsání celé kapacity" "${rewrites}×"
+		fi
+
+		# Celkové hodnocení: 0 = výborný, 1 = dobrý, 2 = opotřebený, 3 = kritický
+		local thr lvl=0 why="" grade
+		thr=$(printf '%s\n' "$out" | awk -F: '/^Available Spare Threshold:/ {gsub(/[ %]/, "", $2); print $2; exit}')
+		spare=${spare%\%}
+		case "$smart" in *Fail*)
+			lvl=3
+			why="$why, SMART: $smart"
+			;;
+		esac
+		if [ -n "$crit" ] && [ "$crit" != "0x00" ]; then
+			lvl=3
+			why="$why, kritické varování $crit"
+		fi
+		if [ -n "$media" ] && [ "$media" -gt 0 ]; then
+			lvl=3
+			why="$why, chyby integrity dat: $media"
+		fi
+		if [ -n "$spare" ] && [ -n "$thr" ] && [ "$spare" -lt "$thr" ]; then
+			lvl=3
+			why="$why, rezerva bloků $spare % pod prahem $thr %"
+		elif [ -n "$spare" ] && [ "$spare" -lt 50 ] && [ "$lvl" -lt 2 ]; then
+			lvl=2
+			why="$why, rezerva bloků $spare %"
+		fi
+		if [ -n "$used" ]; then
+			if [ "$used" -ge 100 ]; then
+				lvl=3
+			elif [ "$used" -ge 80 ] && [ "$lvl" -lt 2 ]; then
+				lvl=2
+			elif [ "$used" -ge 10 ] && [ "$lvl" -lt 1 ]; then
+				lvl=1
+			fi
+			why="$why, opotřebení $used %, zbývá ~$((used < 100 ? 100 - used : 0)) % odhadované životnosti"
+		fi
+		why=${why#, }
+		case $lvl in
+		0) grade="Výborný" ;;
+		1) grade="Dobrý" ;;
+		2) grade="Opotřebený" ;;
+		*) grade="Kritický" ;;
+		esac
+		if [ -n "$used$crit$media" ]; then
+			case $lvl in
+			0 | 1) record ok "Celkový stav SSD" "$grade – $why" ;;
+			2) record warn "Celkový stav SSD" "$grade – $why" ;;
+			*) record err "Celkový stav SSD" "$grade – $why" ;;
+			esac
+			key "Stav SSD" "$grade – $why"
+		fi
 	else
 		record skip "Opotřebení SSD" "smartctl není k dispozici"
+		key "Stav SSD" "SMART: ${smart:-nezjištěno} (podrobné hodnocení vyžaduje smartctl)"
 		key "Hodiny provozu SSD" "nezjištěno (bez smartctl)"
 	fi
 	return 0
@@ -956,7 +1015,7 @@ summary_and_report() {
 
 	# Klíčové údaje v pevném pořadí
 	local keys="" k v
-	for k in "Kapacita baterie" "Nabití baterie" "Cykly baterie" "Hodiny provozu SSD"; do
+	for k in "Kapacita baterie" "Nabití baterie" "Cykly baterie" "Stav SSD" "Hodiny provozu SSD"; do
 		v=$(awk -F"\t" -v k="$k" '$1 == k {print $2; exit}' "$KEYS")
 		[ -n "$v" ] && keys="$keys$k|$v
 "
