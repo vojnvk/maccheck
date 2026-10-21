@@ -16,6 +16,8 @@ Jen rychlé automatické kontroly (asi 5 sekund, bez ručních testů):
 bash <(curl -fsSL https://raw.githubusercontent.com/vojnvk/maccheck/main/maccheck.sh) --quick
 ```
 
+> **Nespouštějte s `sudo`** (`sudo bash <(curl …)` skončí chybou `/dev/fd/…: Bad file descriptor`). Skript si o heslo správce řekne sám, pokud ho budete chtít použít.
+
 Skript se průběžně ptá. Odpovídáte `a` (ano), `n` (ne) nebo `p` (přeskočit), případně jen Enterem potvrdíte výchozí volbu.
 
 ### Přepínače

@@ -1423,7 +1423,10 @@ if [ "$HAVE_TTY" != 1 ]; then
 	note "Terminál není k dispozici – interaktivní části se přeskočí."
 fi
 
-if [ "$OPT_NO_SUDO" = 0 ] && [ "$HAVE_TTY" = 1 ]; then
+if [ "$(id -u)" = 0 ]; then
+	# Spuštěno jako root – rozšířené kontroly jsou dostupné bez dalšího dotazu.
+	[ "$OPT_NO_SUDO" = 0 ] && HAVE_SUDO=1
+elif [ "$OPT_NO_SUDO" = 0 ] && [ "$HAVE_TTY" = 1 ]; then
 	echo
 	note "Některé kontroly (záznam DEP, systémové profily, powermetrics) vyžadují heslo správce."
 	if ask_yn "Použít sudo pro rozšířené kontroly?" n; then
