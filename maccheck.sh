@@ -4,7 +4,7 @@
 # https://github.com/vojnvk/maccheck
 #
 # Skript na systému nic nemění: pouze čte informace. Dočasné soubory
-# (testovací HTML stránka, zvuky, rozpracovaný report) ukládá do vlastní
+# (rozpracovaný report, dočasně stažený smartctl) ukládá do vlastní
 # složky v /tmp a při ukončení ji smaže.
 #
 # Kompatibilní s bash 3.2 (výchozí bash v macOS), bez závislostí.
@@ -33,7 +33,7 @@ Použití:
   bash maccheck.sh [přepínače]
 
 Přepínače:
-  --quick            jen automatické kontroly (bez ručních testů a zátěžového testu)
+  --quick            jen automatické kontroly (bez zátěžového testu a kontrolního seznamu)
   --no-sudo          nežádat o heslo správce; kontroly vyžadující sudo se přeskočí
   --no-color         výstup bez barev
   --stress-time N    délka zátěžového testu v sekundách (výchozí 180)
@@ -109,8 +109,10 @@ WORKDIR=$(mktemp -d /tmp/macdiag.XXXXXX 2>/dev/null) || {
 }
 RESULTS="$WORKDIR/results.tsv"
 BODY="$WORKDIR/body.md"
+KEYS="$WORKDIR/keys.tsv"
 : >"$RESULTS"
 : >"$BODY"
+: >"$KEYS"
 
 STRESS_PIDS=""
 STRESS_WATCHDOG=""
@@ -184,48 +186,6 @@ ask_yn() {
 	done
 }
 
-# ask_test "Otázka" [o] – nastaví ANS na a|n|p (s volbou o i „opakovat“).
-ANS=""
-ask_test() {
-	local q=$1 rep=${2:-} hint="[a/n/p]" ans
-	[ -n "$rep" ] && hint="[a/n/p/o]"
-	if [ "$HAVE_TTY" != 1 ]; then
-		ANS=p
-		return 0
-	fi
-	while :; do
-		printf '  %s%s%s %s ' "$C_BOLD" "$q" "$C_RESET" "$hint"
-		ans=""
-		if ! IFS= read -r ans <&3; then
-			echo
-			ANS=p
-			return 0
-		fi
-		case "$(lower "$ans")" in
-		a | ano | y) ANS=a && return 0 ;;
-		n | ne) ANS=n && return 0 ;;
-		p | '') ANS=p && return 0 ;;
-		o)
-			if [ -n "$rep" ]; then
-				ANS=o
-				return 0
-			fi
-			;;
-		esac
-		if [ -n "$rep" ]; then
-			echo "  a = funguje, n = nefunguje, p = přeskočit, o = opakovat"
-		else
-			echo "  a = funguje, n = nefunguje, p = přeskočit"
-		fi
-	done
-}
-
-wait_enter() {
-	[ "$HAVE_TTY" = 1 ] || return 0
-	printf '  %s%s%s' "$C_DIM" "${1:-Pokračujte klávesou Enter…}" "$C_RESET"
-	IFS= read -r _ <&3 || echo
-}
-
 # ---------------------------------------------------------------------------
 # Výstup a report
 # ---------------------------------------------------------------------------
@@ -269,6 +229,11 @@ record() {
 	printf '  %s %s%s%s %s%s:%s %s\n' "$icon" "$color$C_BOLD" "$(pad "$word" 10)" "$C_RESET" "$C_BOLD" "$label" "$C_RESET" "$detail"
 	printf '%s\t%s\t%s\n' "$st" "$label" "$detail" >>"$RESULTS"
 	printf -- '- %s %s – **%s:** %s\n' "$icon" "$word" "$label" "$detail" >>"$BODY"
+}
+
+# key "Údaj" "hodnota" – klíčový údaj pro blok na začátku souhrnu.
+key() {
+	printf "%s\t%s\n" "$1" "$2" >>"$KEYS"
 }
 
 # Spustí kontrolu v podprocesu, aby chyba v jedné kontrole nezastavila celý skript.
@@ -469,6 +434,7 @@ check_battery() {
 	else
 		record skip "Počet cyklů" "údaj není k dispozici"
 	fi
+	key "Cykly baterie" "${cycles:-nezjištěno}"
 
 	# Stav podle macOS
 	local cond
@@ -489,6 +455,7 @@ check_battery() {
 	maxcap=$(spval "Maximum Capacity" "$bat_block")
 	if [ -n "$design" ] && [ -n "$raw" ] && [ "$design" -gt 0 ]; then
 		health=$(awk -v r="$raw" -v d="$design" 'BEGIN { printf "%.1f", r * 100 / d }')
+		key "Kapacita baterie" "${maxcap:-$health %} (výpočet z ioreg: $health %)"
 		local detail="kapacita $health % návrhové ($raw / $design mAh)"
 		[ -n "$maxcap" ] && detail="$detail; macOS uvádí Maximum Capacity $maxcap"
 		if awk -v h="$health" 'BEGIN { exit !(h >= 90) }'; then
@@ -499,6 +466,7 @@ check_battery() {
 			record err "Zdraví baterie" "$detail"
 		fi
 	elif [ -n "$maxcap" ]; then
+		key "Kapacita baterie" "$maxcap"
 		record ok "Zdraví baterie" "macOS uvádí Maximum Capacity $maxcap (výpočet z ioreg není k dispozici)"
 	else
 		record skip "Zdraví baterie" "údaje o kapacitě nejsou k dispozici"
@@ -506,7 +474,10 @@ check_battery() {
 
 	local charge
 	charge=$(spval "State of Charge (%)" "$bat_block")
-	[ -n "$charge" ] && kv "Aktuální nabití" "$charge %"
+	if [ -n "$charge" ]; then
+		kv "Aktuální nabití" "$charge %"
+		key "Nabití baterie" "$charge %"
+	fi
 
 	# Nabíječka
 	local connected watts charging name
@@ -570,7 +541,7 @@ check_ssd() {
 	if [ -z "$smartctl_bin" ]; then
 		note "Opotřebení SSD (Percentage Used, zapsaná data) umí přečíst smartctl ze smartmontools."
 		note "Nic se neinstaluje: oficiální balíček (1,6 MB, GitHub smartmontools) se ověří a rozbalí jen do /tmp."
-		if ask_yn "Stáhnout smartctl dočasně do /tmp?" n; then
+		if ask_yn "Stáhnout smartctl dočasně do /tmp?" a; then
 			smartctl_bin=$(fetch_smartctl)
 			case $? in
 			0) ;;
@@ -615,11 +586,17 @@ check_ssd() {
 			tb=$(awk -v u="$units" 'BEGIN { printf "%.2f", u * 512000 / 1e12 }')
 			kv "Zapsáno celkem" "$tb TB"
 		fi
-		[ -n "$hours" ] && kv "Doba provozu SSD" "$hours h"
+		if [ -n "$hours" ]; then
+			kv "Doba provozu SSD" "$hours h"
+			key "Hodiny provozu SSD" "$hours h"
+		else
+			key "Hodiny provozu SSD" "nezjištěno"
+		fi
 		[ -n "$unsafe" ] && kv "Nečistá vypnutí" "$unsafe"
 		[ -n "$used$units" ] || record skip "Opotřebení SSD (smartctl)" "smartctl nevrátil NVMe údaje"
 	else
 		record skip "Opotřebení SSD" "smartctl není k dispozici"
+		key "Hodiny provozu SSD" "nezjištěno (bez smartctl)"
 	fi
 	return 0
 }
@@ -938,449 +915,8 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Ruční testy
+# Vizuální kontrola a Apple Diagnostics
 # ---------------------------------------------------------------------------
-
-# manual "Položka" "Otázka" – zeptá se na výsledek a zapíše ho.
-manual() {
-	ask_test "$2"
-	case "$ANS" in
-	a) record ok "$1" "funguje (ověřeno ručně)" ;;
-	n) record err "$1" "nefunguje (ověřeno ručně)" ;;
-	*) record skip "$1" "netestováno" ;;
-	esac
-}
-
-le16() {
-	# shellcheck disable=SC2059
-	printf "\\$(printf '%03o' $(($1 & 255)))\\$(printf '%03o' $((($1 >> 8) & 255)))"
-}
-
-le32() {
-	le16 $(($1 & 65535))
-	le16 $((($1 >> 16) & 65535))
-}
-
-# Vytvoří 8bit stereo WAV s tónem 500 Hz jen v jednom kanálu (left|right).
-make_tone() {
-	local file=$1 side=$2 rate=8000 frames=9600 period="" chunk="" s i
-	# Jedna perioda sinusovky (16 vzorků), bez nulových bajtů.
-	for s in 200 227 252 267 274 267 252 227 200 151 126 111 104 111 126 151; do
-		if [ "$side" = left ]; then period="$period\\$s\\200"; else period="$period\\200\\$s"; fi
-	done
-	i=0
-	while [ $i -lt 60 ]; do
-		chunk="$chunk$period"
-		i=$((i + 1))
-	done
-	{
-		printf 'RIFF'
-		le32 $((36 + frames * 2))
-		printf 'WAVEfmt '
-		le32 16
-		le16 1
-		le16 2
-		le32 $rate
-		le32 $((rate * 2))
-		le16 2
-		le16 8
-		printf 'data'
-		le32 $((frames * 2))
-		i=0
-		while [ $i -lt 10 ]; do
-			# shellcheck disable=SC2059
-			printf "$chunk"
-			i=$((i + 1))
-		done
-	} >"$file"
-}
-
-test_speakers() {
-	local vol muted
-	vol=$(osascript -e 'output volume of (get volume settings)' 2>/dev/null)
-	muted=$(osascript -e 'output muted of (get volume settings)' 2>/dev/null)
-	echo
-	note "Test reproduktorů – odpojte sluchátka/AirPods, aby zvuk šel do vestavěných reproduktorů."
-	if [ "$muted" = "true" ]; then
-		note "Zvuk je ztlumený – zapněte ho klávesou F10/F12."
-	elif [ -n "$vol" ]; then
-		note "Aktuální hlasitost: $vol % (případně ji zvyšte klávesou F12)."
-	fi
-	make_tone "$WORKDIR/left.wav" left
-	make_tone "$WORKDIR/right.wav" right
-	local side label file
-	for side in left right; do
-		if [ "$side" = left ]; then
-			label="Levý reproduktor"
-			file="$WORKDIR/left.wav"
-		else
-			label="Pravý reproduktor"
-			file="$WORKDIR/right.wav"
-		fi
-		while :; do
-			printf '  ▶ Přehrávám tón v kanálu: %s%s%s\n' "$C_BOLD" "$label" "$C_RESET"
-			afplay "$file" 2>/dev/null
-			ask_test "Ozval se tón jen z této strany a čistě (bez praskání)?" o
-			[ "$ANS" = o ] || break
-		done
-		case "$ANS" in
-		a) record ok "$label" "funguje (ověřeno ručně)" ;;
-		n) record err "$label" "nefunguje (ověřeno ručně)" ;;
-		*) record skip "$label" "netestováno" ;;
-		esac
-	done
-}
-
-# Otevře aplikaci a po testu ji zavře, ale jen pokud předtím neběžela.
-with_app() {
-	local app=$1 was_running=0
-	pgrep -xq "$app" && was_running=1
-	shift
-	"$@"
-	if [ "$was_running" = 0 ]; then
-		osascript -e "tell application \"$app\" to quit saving no" >/dev/null 2>&1
-	fi
-}
-
-camera_step() {
-	open -a "Photo Booth" 2>/dev/null || {
-		record skip "Kamera (obraz)" "Photo Booth nelze otevřít"
-		return 0
-	}
-	note "Otevřel se Photo Booth – zkontrolujte obraz kamery (ostrost, barvy, kontrolka vedle kamery)."
-	manual "Kamera (obraz)" "Kamera ukazuje čistý obraz a svítí zelená kontrolka?"
-}
-
-mic_step() {
-	if osascript -e 'tell application "QuickTime Player" to activate' \
-		-e 'tell application "QuickTime Player" to new audio recording' >/dev/null 2>&1; then
-		note "V QuickTime se otevřel záznam zvuku (nic se nenahrává ani neukládá)."
-		note "Mluvte do Macu a sledujte ukazatel hlasitosti v okně."
-	else
-		note "QuickTime nelze otevřít – mikrofon můžete vyzkoušet nahráním videa v Photo Booth."
-	fi
-	manual "Mikrofon (záznam)" "Ukazatel hlasitosti reaguje na hlas?"
-}
-
-ports_checklist() {
-	local tbports
-	tbports=$(system_profiler SPThunderboltDataType 2>/dev/null | grep -c 'Receptacle:' | tr -d ' ')
-	echo
-	note "Porty – vyzkoušejte každý port (p = model port nemá / netestováno):"
-	note "  • USB‑C / Thunderbolt: nabíječka nebo flash disk v každém portu${tbports:+ (nalezeno portů: $tbports)}"
-	note "  • MagSafe: nabíječka se uchytí magnetem a kontrolka svítí"
-	note "  • HDMI: obraz na externím monitoru/TV"
-	note "  • Čtečka SD karet: karta se připojí ve Finderu"
-	note "  • 3,5mm jack: zvuk ve sluchátkách"
-	manual "Porty USB‑C / Thunderbolt" "Všechny USB‑C / Thunderbolt porty fungují?"
-	manual "Port MagSafe" "MagSafe nabíjí?"
-	manual "Port HDMI" "HDMI zobrazuje obraz?"
-	manual "Čtečka SD karet" "SD karta se načte?"
-	manual "Konektor 3,5 mm" "Sluchátka v jacku hrají?"
-}
-
-write_html() {
-	cat >"$1" <<'HTML'
-<!doctype html>
-<html lang="cs">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Mac Diagnostika – ruční testy</title>
-<style>
-:root { --bg:#f5f5f7; --fg:#1d1d1f; --muted:#6e6e73; --card:#fff; --line:#d2d2d7; --key:#fbfbfd; --ok:#34c759; --accent:#0071e3; }
-@media (prefers-color-scheme: dark) { :root { --bg:#161617; --fg:#f5f5f7; --muted:#a1a1a6; --card:#232325; --line:#3a3a3c; --key:#2c2c2e; --accent:#2997ff; } }
-* { box-sizing:border-box; }
-body { margin:0; font:15px/1.45 -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; background:var(--bg); color:var(--fg); -webkit-user-select:none; user-select:none; }
-header { padding:20px 24px 0; max-width:1100px; margin:0 auto; }
-h1 { font-size:22px; margin:0 0 4px; }
-header p { margin:0; color:var(--muted); }
-nav { display:flex; gap:8px; padding:16px 24px; max-width:1100px; margin:0 auto; flex-wrap:wrap; }
-nav button { font:inherit; border:1px solid var(--line); background:var(--card); color:var(--fg); padding:8px 16px; border-radius:999px; cursor:pointer; }
-nav button.active { background:var(--accent); border-color:var(--accent); color:#fff; }
-main { max-width:1100px; margin:0 auto; padding:0 24px 32px; }
-section { display:none; background:var(--card); border:1px solid var(--line); border-radius:14px; padding:20px; }
-section.active { display:block; }
-h2 { margin:0 0 6px; font-size:18px; }
-.hint { color:var(--muted); margin:0 0 14px; }
-.btn { font:inherit; background:var(--accent); color:#fff; border:0; border-radius:8px; padding:10px 18px; cursor:pointer; }
-.btn.secondary { background:transparent; color:var(--accent); border:1px solid var(--line); }
-#screen { position:fixed; inset:0; display:none; cursor:none; z-index:10; }
-#screen.on { display:block; }
-#screenLabel { position:absolute; top:24px; left:50%; transform:translateX(-50%); padding:6px 14px; border-radius:8px; background:rgba(0,0,0,.55); color:#fff; font-size:14px; transition:opacity .6s; }
-.kb { display:flex; flex-direction:column; gap:6px; margin-top:8px; overflow-x:auto; padding-bottom:4px; }
-.row { display:flex; gap:6px; }
-.k { flex:0 0 auto; height:46px; min-width:46px; border:1px solid var(--line); border-radius:7px; background:var(--key); display:flex; align-items:flex-end; justify-content:flex-start; padding:4px 6px; font-size:12px; color:var(--muted); transition:background .1s; }
-.row.f .k { height:30px; }
-.k.down { background:var(--ok); color:#fff; border-color:var(--ok); }
-.k.done { background:color-mix(in srgb, var(--ok) 70%, var(--key)); color:#fff; border-color:var(--ok); }
-.k.opt { border-style:dashed; }
-.k.na { opacity:.35; }
-.arrows { display:flex; flex-direction:column; gap:2px; }
-.arrows .k { height:22px; }
-.stats { display:flex; gap:20px; flex-wrap:wrap; margin:12px 0; color:var(--muted); }
-.stats b { color:var(--fg); }
-#pad { width:100%; height:60vh; min-height:320px; border:1px solid var(--line); border-radius:12px; background:var(--key); touch-action:none; display:block; }
-ul { margin:8px 0 0; padding-left:20px; }
-</style>
-</head>
-<body>
-<header>
-  <h1>Mac Diagnostika – ruční testy</h1>
-  <p>Stránka běží lokálně a nic neodesílá. Výsledky zadávejte v terminálu.</p>
-</header>
-<nav>
-  <button data-tab="display" class="active">1. Displej</button>
-  <button data-tab="keyboard">2. Klávesnice</button>
-  <button data-tab="trackpad">3. Trackpad</button>
-</nav>
-<main>
-  <section id="display" class="active">
-    <h2>Test displeje</h2>
-    <p class="hint">Celoobrazovkové barvy pro hledání vadných pixelů, skvrn, pruhů a nerovnoměrného podsvícení. Další barva: klik, mezerník nebo šipka. Konec: Esc.</p>
-    <button class="btn" id="startDisplay">Spustit test na celou obrazovku</button>
-    <ul>
-      <li><b>Bílá</b> – skvrny, žluté okraje, tmavé (mrtvé) pixely</li>
-      <li><b>Černá</b> – svítící pixely, prosvítání podsvícení v rozích</li>
-      <li><b>Červená, zelená, modrá</b> – subpixely, které nesvítí nebo svítí stále</li>
-      <li><b>Šedá a přechod</b> – pruhy, stíny, nerovnoměrnost</li>
-    </ul>
-  </section>
-
-  <section id="keyboard">
-    <h2>Test klávesnice</h2>
-    <p class="hint">Stiskněte postupně všechny klávesy – vyzkoušené zezelenají. F1–F12 držte spolu s klávesou fn. Klávesy fn/🌐 a Touch ID prohlížeč nezachytí. Pozor: Cmd+W a Cmd+Q zavřou okno.</p>
-    <div class="stats"><span>Otestováno: <b id="kbCount">0</b> / <b id="kbTotal">0</b></span><span>Poslední klávesa: <b id="kbLast">–</b></span><button class="btn secondary" id="kbReset">Vynulovat</button></div>
-    <div class="kb" id="kb"></div>
-  </section>
-
-  <section id="trackpad">
-    <h2>Test trackpadu</h2>
-    <p class="hint">Přejeďte prstem po celé ploše trackpadu – stopa by měla být plynulá a bez skoků, i v rozích. Vyzkoušejte klik v různých místech, pravé kliknutí (dvěma prsty), posun dvěma prsty, zoom a silné stisknutí (Force Touch).</p>
-    <div class="stats">
-      <span>Kliknutí: <b id="tpClick">0</b></span>
-      <span>Pravé kliknutí: <b id="tpRight">0</b></span>
-      <span>Posun dvěma prsty: <b id="tpScroll">0</b></span>
-      <span>Zoom: <b id="tpZoom">0</b></span>
-      <span>Force Touch: <b id="tpForce">0</b></span>
-      <button class="btn secondary" id="tpClear">Vymazat</button>
-    </div>
-    <canvas id="pad"></canvas>
-  </section>
-</main>
-<div id="screen"><div id="screenLabel"></div></div>
-<script>
-(function () {
-  // Záložky
-  var tabs = document.querySelectorAll('nav button');
-  function showTab(id) {
-    tabs.forEach(function (b) { b.classList.toggle('active', b.dataset.tab === id); });
-    document.querySelectorAll('section').forEach(function (s) { s.classList.toggle('active', s.id === id); });
-    if (id === 'trackpad') resizePad();
-  }
-  tabs.forEach(function (b) { b.addEventListener('click', function () { showTab(b.dataset.tab); b.blur(); }); });
-  function activeTab() { return document.querySelector('section.active').id; }
-
-  // Displej
-  var colors = [
-    ['#ffffff', 'Bílá'], ['#000000', 'Černá'], ['#ff0000', 'Červená'], ['#00ff00', 'Zelená'],
-    ['#0000ff', 'Modrá'], ['#808080', 'Šedá'], ['linear-gradient(90deg,#000,#fff)', 'Šedý přechod']
-  ];
-  var screen = document.getElementById('screen'), label = document.getElementById('screenLabel');
-  var ci = 0, labelTimer = null;
-  function paint() {
-    screen.style.background = colors[ci][0];
-    label.textContent = (ci + 1) + ' / ' + colors.length + ' – ' + colors[ci][1] + ' (Esc = konec)';
-    label.style.opacity = 1;
-    clearTimeout(labelTimer);
-    labelTimer = setTimeout(function () { label.style.opacity = 0; }, 1500);
-  }
-  function step(d) { ci = (ci + d + colors.length) % colors.length; paint(); }
-  function closeScreen() {
-    screen.classList.remove('on');
-    if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen();
-    else if (document.webkitFullscreenElement && document.webkitExitFullscreen) document.webkitExitFullscreen();
-  }
-  document.getElementById('startDisplay').addEventListener('click', function () {
-    ci = 0; screen.classList.add('on'); paint();
-    if (screen.requestFullscreen) screen.requestFullscreen().catch(function () {});
-    else if (screen.webkitRequestFullscreen) screen.webkitRequestFullscreen();
-  });
-  screen.addEventListener('click', function () { step(1); });
-  function fsChange() { if (!document.fullscreenElement && !document.webkitFullscreenElement) screen.classList.remove('on'); }
-  document.addEventListener('fullscreenchange', fsChange);
-  document.addEventListener('webkitfullscreenchange', fsChange);
-
-  // Klávesnice (fyzické rozložení MacBooku; popisky se přepíšou skutečně zadaným znakem)
-  // [kód, popisek, šířka, příznak] – příznak: o = jen některá rozložení, n = nelze zachytit
-  var rows = [
-    { cls: 'f', keys: [['Escape','esc',1.5],['F1','F1'],['F2','F2'],['F3','F3'],['F4','F4'],['F5','F5'],['F6','F6'],['F7','F7'],['F8','F8'],['F9','F9'],['F10','F10'],['F11','F11'],['F12','F12'],['TouchID','●',1,'n']] },
-    { keys: [['Backquote','`'],['Digit1','1'],['Digit2','2'],['Digit3','3'],['Digit4','4'],['Digit5','5'],['Digit6','6'],['Digit7','7'],['Digit8','8'],['Digit9','9'],['Digit0','0'],['Minus','-'],['Equal','='],['Backspace','delete',1.5]] },
-    { keys: [['Tab','tab',1.5],['KeyQ','Q'],['KeyW','W'],['KeyE','E'],['KeyR','R'],['KeyT','T'],['KeyY','Y'],['KeyU','U'],['KeyI','I'],['KeyO','O'],['KeyP','P'],['BracketLeft','['],['BracketRight',']'],['Backslash','\\']] },
-    { keys: [['CapsLock','caps lock',1.8],['KeyA','A'],['KeyS','S'],['KeyD','D'],['KeyF','F'],['KeyG','G'],['KeyH','H'],['KeyJ','J'],['KeyK','K'],['KeyL','L'],['Semicolon',';'],['Quote',"'"],['Enter','return',1.7]] },
-    { keys: [['ShiftLeft','shift',1.3],['IntlBackslash','§',1,'o'],['KeyZ','Z'],['KeyX','X'],['KeyC','C'],['KeyV','V'],['KeyB','B'],['KeyN','N'],['KeyM','M'],['Comma',','],['Period','.'],['Slash','/'],['ShiftRight','shift',2.3]] },
-    { keys: [['Fn','fn',1,'n'],['ControlLeft','control'],['AltLeft','option'],['MetaLeft','command',1.3],['Space','',5.6],['MetaRight','command',1.3],['AltRight','option'],['ArrowLeft','←'],['Arrows'],['ArrowRight','→']] }
-  ];
-  var kb = document.getElementById('kb'), keyEls = {}, pressed = {}, required = 0;
-  var U = 46, GAP = 6;
-  function mkKey(k) {
-    var el = document.createElement('div');
-    el.className = 'k' + (k[3] === 'o' ? ' opt' : '') + (k[3] === 'n' ? ' na' : '');
-    var w = k[2] || 1;
-    el.style.width = (U * w + GAP * (w - 1)) + 'px';
-    el.textContent = k[1];
-    if (k[3] === 'o') el.title = 'Jen na klávesnici s ISO rozložením';
-    keyEls[k[0]] = el;
-    if (!k[3]) required++;
-    return el;
-  }
-  rows.forEach(function (r) {
-    var row = document.createElement('div');
-    row.className = 'row' + (r.cls ? ' ' + r.cls : '');
-    r.keys.forEach(function (k) {
-      if (k[0] === 'Arrows') {
-        var a = document.createElement('div'); a.className = 'arrows';
-        a.appendChild(mkKey(['ArrowUp', '↑'])); a.appendChild(mkKey(['ArrowDown', '↓']));
-        row.appendChild(a);
-      } else row.appendChild(mkKey(k));
-    });
-    kb.appendChild(row);
-  });
-  document.getElementById('kbTotal').textContent = required;
-  function updateCount() {
-    var n = 0;
-    for (var c in pressed) if (keyEls[c] && keyEls[c].className.indexOf(' opt') < 0 && keyEls[c].className.indexOf(' na') < 0) n++;
-    document.getElementById('kbCount').textContent = n;
-  }
-  function keyName(e) {
-    if (e.key === ' ') return 'mezerník';
-    return e.key.length === 1 ? e.key.toUpperCase() : e.key;
-  }
-  document.addEventListener('keydown', function (e) {
-    if (screen.classList.contains('on')) {
-      if (e.key === 'Escape') closeScreen();
-      else if (e.key === ' ' || e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === 'Enter') step(1);
-      else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') step(-1);
-      e.preventDefault();
-      return;
-    }
-    if (activeTab() !== 'keyboard') return;
-    e.preventDefault();
-    var el = keyEls[e.code];
-    document.getElementById('kbLast').textContent = keyName(e) + ' (' + e.code + ')';
-    if (!el) return;
-    if (e.key && e.key.length === 1 && e.key !== ' ') el.textContent = e.key.toUpperCase();
-    el.classList.add('down', 'done');
-    pressed[e.code] = true;
-    updateCount();
-    if (e.code === 'CapsLock') setTimeout(function () { el.classList.remove('down'); }, 200);
-  });
-  document.addEventListener('keyup', function (e) {
-    var el = keyEls[e.code];
-    if (el) {
-      el.classList.remove('down');
-      if (e.code === 'CapsLock') { el.classList.add('done'); pressed[e.code] = true; updateCount(); }
-    }
-    // Při držení Cmd macOS neposílá keyup ostatních kláves.
-    if (e.key === 'Meta') Object.keys(keyEls).forEach(function (c) { keyEls[c].classList.remove('down'); });
-  });
-  document.getElementById('kbReset').addEventListener('click', function (e) {
-    pressed = {};
-    Object.keys(keyEls).forEach(function (c) { keyEls[c].classList.remove('down', 'done'); });
-    updateCount();
-    e.target.blur();
-  });
-
-  // Trackpad
-  var pad = document.getElementById('pad'), ctx = pad.getContext('2d'), last = null, hue = 200;
-  var counts = { tpClick: 0, tpRight: 0, tpScroll: 0, tpZoom: 0, tpForce: 0 };
-  function bump(id) { counts[id]++; document.getElementById(id).textContent = counts[id]; }
-  function resizePad() {
-    var r = pad.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
-    if (!r.width) return;
-    pad.width = r.width * dpr; pad.height = r.height * dpr;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-    last = null;
-  }
-  window.addEventListener('resize', resizePad);
-  function pos(e) { var r = pad.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
-  pad.addEventListener('pointermove', function (e) {
-    var p = pos(e);
-    if (last) {
-      hue = (hue + 0.6) % 360;
-      ctx.strokeStyle = e.buttons ? '#ff3b30' : 'hsl(' + hue + ',80%,55%)';
-      ctx.lineWidth = e.buttons ? 6 : 3;
-      ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke();
-    }
-    last = p;
-  });
-  pad.addEventListener('pointerleave', function () { last = null; });
-  pad.addEventListener('click', function (e) {
-    var p = pos(e);
-    ctx.fillStyle = '#ff3b30'; ctx.beginPath(); ctx.arc(p.x, p.y, 7, 0, 6.3); ctx.fill();
-    bump('tpClick');
-  });
-  pad.addEventListener('contextmenu', function (e) {
-    e.preventDefault();
-    var p = pos(e);
-    ctx.fillStyle = '#0071e3'; ctx.beginPath(); ctx.arc(p.x, p.y, 7, 0, 6.3); ctx.fill();
-    bump('tpRight');
-  });
-  var scrollTimer = null;
-  pad.addEventListener('wheel', function (e) {
-    e.preventDefault();
-    if (e.ctrlKey) { if (!scrollTimer) bump('tpZoom'); }
-    else if (!scrollTimer) bump('tpScroll');
-    clearTimeout(scrollTimer);
-    scrollTimer = setTimeout(function () { scrollTimer = null; }, 300);
-  }, { passive: false });
-  pad.addEventListener('gesturestart', function (e) { e.preventDefault(); bump('tpZoom'); });
-  pad.addEventListener('webkitmouseforcedown', function () { bump('tpForce'); });
-  document.getElementById('tpClear').addEventListener('click', function (e) {
-    ctx.clearRect(0, 0, pad.width, pad.height);
-    for (var k in counts) { counts[k] = 0; document.getElementById(k).textContent = 0; }
-    e.target.blur();
-  });
-})();
-</script>
-</body>
-</html>
-HTML
-}
-
-interactive_tests() {
-	section "Ruční testy"
-	note "Průvodce otevře v Safari lokální testovací stránku, přehraje zvuk a otevře Photo Booth."
-	note "U každého testu odpovězte: a = funguje, n = nefunguje, p = přeskočit."
-	if ! ask_yn "Spustit ruční testy?" a; then
-		record skip "Ruční testy" "nespuštěny"
-		return 0
-	fi
-
-	local html="$WORKDIR/test.html"
-	write_html "$html"
-	if open -a Safari "$html" 2>/dev/null || open "$html" 2>/dev/null; then
-		echo
-		note 'V Safari se otevřela stránka „Mac Diagnostika – ruční testy“.'
-		note "1) Záložka Displej: spusťte test na celou obrazovku a projděte všechny barvy."
-		manual "Displej" "Displej je bez vadných pixelů, skvrn a pruhů?"
-		note "2) Záložka Klávesnice: stiskněte všechny klávesy."
-		manual "Klávesnice" "Všechny klávesy reagují?"
-		note "3) Záložka Trackpad: přejeďte celou plochu, klikněte v rozích, zkuste gesta."
-		manual "Trackpad" "Trackpad reaguje plynule na celé ploše a klik funguje všude?"
-	else
-		record skip "Displej, klávesnice, trackpad" "testovací stránku nelze otevřít"
-	fi
-
-	test_speakers
-	echo
-	with_app "Photo Booth" camera_step
-	echo
-	with_app "QuickTime Player" mic_step
-	ports_checklist
-	return 0
-}
 
 physical_checklist() {
 	section "Vizuální a mechanická kontrola"
@@ -1418,7 +954,22 @@ summary_and_report() {
 	n_err=$(grep -c '^err	' "$RESULTS" | tr -d ' ')
 	n_skip=$(grep -c '^skip	' "$RESULTS" | tr -d ' ')
 
+	# Klíčové údaje v pevném pořadí
+	local keys="" k v
+	for k in "Kapacita baterie" "Nabití baterie" "Cykly baterie" "Hodiny provozu SSD"; do
+		v=$(awk -F"\t" -v k="$k" '$1 == k {print $2; exit}' "$KEYS")
+		[ -n "$v" ] && keys="$keys$k|$v
+"
+	done
+
 	section "Souhrn"
+	if [ -n "$keys" ]; then
+		printf '%s' "$keys" | while IFS='|' read -r k v; do
+			[ -n "$k" ] || continue
+			printf '  %s%s%s %s\n' "$C_BOLD" "$(pad "$k:" 24)" "$C_RESET" "$v"
+		done
+		echo
+	fi
 	printf '  ✅ %sOK: %s%s   ⚠️  %sPozor: %s%s   ❌ %sChyba: %s%s   ⏭️  Přeskočeno: %s\n' \
 		"$C_GREEN" "$n_ok" "$C_RESET" "$C_YELLOW" "$n_warn" "$C_RESET" "$C_RED" "$n_err" "$C_RESET" "$n_skip"
 
@@ -1441,6 +992,10 @@ summary_and_report() {
 		printf -- '- Sériové číslo: %s\n' "${SERIAL:-?}"
 		printf -- '- Verze nástroje: %s (%s)\n\n' "$VERSION" "$REPO_URL"
 		printf '## Souhrn\n\n'
+		printf '%s' "$keys" | while IFS='|' read -r k v; do
+			[ -n "$k" ] && printf -- '- **%s:** %s\n' "$k" "$v"
+		done
+		[ -n "$keys" ] && echo
 		printf 'OK: %s · Pozor: %s · Chyba: %s · Přeskočeno: %s\n\n' "$n_ok" "$n_warn" "$n_err" "$n_skip"
 		if [ -n "$issues" ]; then
 			printf '%s\n' "$issues" | sed 's/^/- /; s/⚠️  /⚠️ /'
@@ -1504,7 +1059,6 @@ run_check show_serial
 
 if [ "$OPT_QUICK" = 0 ]; then
 	stress_test
-	run_check interactive_tests
 	run_check physical_checklist
 fi
 

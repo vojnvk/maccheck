@@ -10,7 +10,7 @@ Otevřete **Terminál** (Cmd+mezerník → „Terminál“) a vložte:
 bash <(curl -fsSL https://raw.githubusercontent.com/vojnvk/maccheck/main/maccheck.sh)
 ```
 
-Jen rychlé automatické kontroly (asi 5 sekund, bez ručních testů):
+Jen rychlé automatické kontroly (asi 10 sekund, bez zátěžového testu):
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/vojnvk/maccheck/main/maccheck.sh) --quick
@@ -18,13 +18,13 @@ bash <(curl -fsSL https://raw.githubusercontent.com/vojnvk/maccheck/main/macchec
 
 > **Nespouštějte s `sudo`** (`sudo bash <(curl …)` skončí chybou `/dev/fd/…: Bad file descriptor`). Skript si o heslo správce řekne sám, pokud ho budete chtít použít.
 
-Skript se průběžně ptá. Odpovídáte `a` (ano), `n` (ne) nebo `p` (přeskočit), případně jen Enterem potvrdíte výchozí volbu.
+Skript se průběžně ptá. Odpovídáte `a` (ano) nebo `n` (ne), případně jen Enterem potvrdíte výchozí volbu.
 
 ### Přepínače
 
 | Přepínač | Popis |
 |---|---|
-| `--quick` | jen automatické kontroly, bez ručních testů a zátěžového testu |
+| `--quick` | jen automatické kontroly, bez zátěžového testu a kontrolního seznamu |
 | `--no-sudo` | neptat se na heslo správce; kontroly vyžadující sudo se přeskočí |
 | `--no-color` | výstup bez barev |
 | `--stress-time N` | délka zátěžového testu v sekundách (výchozí 180) |
@@ -38,20 +38,19 @@ Skript se průběžně ptá. Odpovídáte `a` (ano), `n` (ne) nebo `p` (přesko�
 - **Baterie:** počet cyklů, stav, skutečná kapacita vůči návrhové (z `ioreg`), nabíječka
 - **SSD:** SMART stav, model, kapacita; volitelně přes `smartctl` i opotřebení (Percentage Used), zapsaná data, doba provozu a chyby integrity
 - **Kernel panic** za posledních 90 dní, vynucená vypnutí, pády aplikací
-- **Periferie:** displej, kamera, reproduktory, mikrofon, Wi‑Fi, Bluetooth, Touch ID, klávesnice/trackpad, Thunderbolt
+- **Periferie (přítomnost):** displej, kamera, reproduktory, mikrofon, Wi‑Fi, Bluetooth, Touch ID, klávesnice/trackpad, Thunderbolt
 - **Uptime** a datum prvního nastavení systému
 - Sériové číslo lze zkopírovat do schránky a otevřít [checkcoverage.apple.com](https://checkcoverage.apple.com/)
 
 **Volitelně**
 - **Zátěžový test CPU** (3 minuty, všechna jádra) se sledováním tepelného tlaku. Ctrl+C ho kdykoliv bezpečně ukončí.
-- **Ruční testy:** lokální stránka v Safari (test displeje na celou obrazovku, klávesnice, trackpad), tón zvlášť v levém a pravém reproduktoru, kamera (Photo Booth), mikrofon (QuickTime) a kontrolní seznam portů
 - Kontrolní seznam vizuálního stavu a návod ke spuštění Apple Diagnostics
 
 **Sudo (volitelné, skript se zeptá):** záznam DEP z Apple Business Manageru, systémové konfigurační profily a `powermetrics` během zátěžového testu.
 
 ## Stavy a report
 
-Každá kontrola má stav ✅ OK / ⚠️ Pozor / ❌ Chyba / ⏭️ Přeskočeno a k němu naměřenou hodnotu. Na konci se vypíše souhrn a seznam položek se stavem Pozor nebo Chyba. Report v Markdownu lze zkopírovat do schránky, případně uložit do `/tmp`.
+Každá kontrola má stav ✅ OK / ⚠️ Pozor / ❌ Chyba / ⏭️ Přeskočeno a k němu naměřenou hodnotu. Na konci se vypíší klíčové údaje (kapacita a nabití baterie, počet cyklů, hodiny provozu SSD), souhrn a seznam položek se stavem Pozor nebo Chyba. Report v Markdownu lze zkopírovat do schránky, případně uložit do `/tmp`.
 
 Ukázka:
 
@@ -64,15 +63,19 @@ Ukázka:
   Nabíječka:               nepřipojena
 
 ━━ Souhrn ━━━━━━━━━━━━━━━━━━━━
-  ✅ OK: 19   ⚠️  Pozor: 0   ❌ Chyba: 0   ⏭️  Přeskočeno: 2
+  Kapacita baterie:        98 % (výpočet z ioreg: 95.6 %)
+  Nabití baterie:          22 %
+  Cykly baterie:           177
+  Hodiny provozu SSD:      836 h
+
+  ✅ OK: 22   ⚠️  Pozor: 0   ❌ Chyba: 0   ⏭️  Přeskočeno: 1
 ```
 
 ## Bezpečnost
 
 - Skript **pouze čte**: nic neinstaluje, nemění nastavení ani hlasitost.
-- Dočasné soubory (testovací stránka, zvuk, report) jsou ve vlastní složce v `/tmp` a po skončení se smažou.
+- Dočasné soubory (report, případně stažený `smartctl`) jsou ve vlastní složce v `/tmp` a po skončení se smažou.
 - `smartctl` se stahuje jen na vyžádání: oficiální balíček smartmontools z GitHubu se ověří přes SHA-256 a rozbalí do dočasné složky v `/tmp`, neinstaluje se.
-- Stránka s ručními testy běží lokálně, bez internetu a bez externích knihoven.
 - Jeden soubor, čistý bash 3.2 (výchozí v macOS), jen nástroje dodávané s macOS.
 - Před spuštěním si můžete [kód prohlédnout](maccheck.sh).
 
@@ -88,7 +91,7 @@ Primárně pro Apple Silicon (M1 a novější). Na Intel Macu skript poběží a
 bash <(curl -fsSL https://raw.githubusercontent.com/vojnvk/maccheck/main/maccheck.sh)
 ```
 
-It reports hardware details, Activation Lock / Find My / MDM status, battery cycles and capacity, SSD SMART status, kernel panics, SIP and peripherals. Optionally it runs a CPU stress test with thermal monitoring and guided manual tests (display, keyboard, trackpad, speakers, camera, microphone, ports). Output is in Czech. Options: `--quick`, `--no-sudo`, `--no-color`, `--stress-time N`, `--help`.
+It reports battery capacity, charge and cycle count, SSD power-on hours, hardware details, Activation Lock / Find My / MDM status, battery cycles and capacity, SSD SMART status, kernel panics, SIP and peripherals. Optionally it runs a CPU stress test with thermal monitoring. Output is in Czech. Options: `--quick`, `--no-sudo`, `--no-color`, `--stress-time N`, `--help`.
 
 ## Licence
 
